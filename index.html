@@ -2,216 +2,427 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>BITPLANES - PHYSICS</title>
+    <title>BITPLANES - TOTAL WAR</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; }
+        body { margin: 0; background: #111; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
         canvas { 
             image-rendering: pixelated; 
             width: 100vw; height: 100vh; 
             object-fit: contain;
-            background: #4488ff;
+            background: #4d9be6;
+            cursor: none;
         }
-        #ui { position: absolute; color: #fff; font-family: 'Courier New', monospace; text-align: center; background: rgba(0,0,0,0.8); padding: 20px; z-index: 10; border: 2px solid #fff; }
-        .hidden { display: none; }
+        #boot-screen {
+            position: absolute; color: #0f0; font-family: 'Courier New', monospace;
+            background: #000; inset: 0; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
+        .loading-bar { width: 200px; height: 10px; border: 2px solid #0f0; margin-top: 20px; position: relative; }
+        .progress { background: #0f0; height: 100%; width: 0%; transition: width 0.1s; }
+        .hidden { display: none !important; }
     </style>
 </head>
 <body>
 
-<div id="ui">
-    <h1 style="margin:0; color:#ffff00;">BITPLANES</h1>
-    <p>GRAVITY PHYSICS ENABLED</p>
-    <button onclick="start()" style="padding:10px; cursor:pointer; font-family: 'Courier New'; font-weight:bold;">READY P1 & P2</button>
+<div id="boot-screen">
+    <pre>
+    ____  _ __       ____  __                     
+   / __ )(_) /_     / __ \/ /___ _____  ___  _____
+  / __  / / __/    / /_/ / / __ `/ __ \/ _ \/ ___/
+ / /_/ / / /_     / ____/ / /_/ / / / /  __(__  ) 
+/_____/_/\__/    /_/   /_/\__,_/_/ /_/\___/____/  
+    </pre>
+    <div id="status">INITIALIZING SYSTEM...</div>
+    <div class="loading-bar"><div id="bar" class="progress"></div></div>
+    <p id="prompt" class="hidden">PRESS [ENTER] TO ENGAGE</p>
 </div>
 
 <canvas id="game"></canvas>
 
 <script>
+/** * BITPLANES: TOTAL WAR 
+ * A high-fidelity retro dogfighting simulation.
+ */
+
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
-// Low-res internal buffer
-const W = 400; const H = 240;
-canvas.width = W; canvas.height = H;
+// --- CONSTANTS ---
+const RES_W = 480; 
+const RES_H = 270;
+const WORLD_W = 3000;
+const GROUND_LEVEL = 255;
+const GRAVITY = 0.08;
+const FRICTION = 0.985;
+const THRUST = 0.22;
+const BARN_X = 1500;
 
-const WORLD_W = 2400;
-const GROUND_Y = 220;
-const BARN_X = 1200;
-const GRAVITY = 0.05;
+canvas.width = RES_W;
+canvas.height = RES_H;
 
+// --- UTILS ---
+const clamp = (val, min, max) => Math.max(min, Math.min(max, val));
 const keys = {};
 window.onkeydown = e => keys[e.code] = true;
 window.onkeyup = e => keys[e.code] = false;
 
-class Plane {
-    constructor(x, y, color, controls, id) {
+// --- PARTICLE SYSTEM ---
+class Particle {
+    constructor(x, y, vx, vy, life, color, size) {
+        this.x = x; this.y = y; this.vx = vx; this.vy = vy;
+        this.life = life; this.maxLife = life; this.color = color; this.size = size;
+    }
+    update() {
+        this.x += this.vx; this.y += this.vy;
+        this.life--;
+    }
+    draw(c, cx, cy) {
+        let alpha = this.life / this.maxLife;
+        c.fillStyle = this.color;
+        c.globalAlpha = alpha;
+        c.fillRect(Math.floor(this.x - cx), Math.floor(this.y - cy), this.size, this.size);
+        c.globalAlpha = 1.0;
+    }
+}
+
+let particles = [];
+function spawnExplosion(x, y, color) {
+    for(let i=0; i<15; i++) {
+        particles.push(new Particle(x, y, (Math.random()-0.5)*4, (Math.random()-0.5)*4, 20+Math.random()*20, color, 2));
+    }
+}
+
+// --- PROJECTILES ---
+class Bullet {
+    constructor(x, y, angle, owner) {
+        this.x = x; this.y = y;
+        this.vx = Math.cos(angle) * 7;
+        this.vy = Math.sin(angle) * 7;
+        this.life = 45;
+        this.owner = owner;
+    }
+    update() {
+        this.x += this.vx; this.y += this.vy;
+        this.life--;
+        if (this.x < 0) this.x = WORLD_W; if (this.x > WORLD_W) this.x = 0;
+    }
+}
+
+class Missile {
+    constructor(x, y, angle, target, owner) {
+        this.x = x; this.y = y; this.angle = angle;
+        this.target = target; this.life = 150; this.owner = owner;
+        this.turnSpeed = 0.06;
+    }
+    update() {
+        let dx = this.target.x - this.x;
+        let dy = this.target.y - this.y;
+        let targetAngle = Math.atan2(dy, dx);
+        let diff = targetAngle - this.angle;
+        while(diff < -Math.PI) diff += Math.PI*2;
+        while(diff > Math.PI) diff -= Math.PI*2;
+        this.angle += diff * this.turnSpeed;
+        this.x += Math.cos(this.angle) * 4;
+        this.y += Math.sin(this.angle) * 4;
+        this.life--;
+        if (Math.random() > 0.5) particles.push(new Particle(this.x, this.y, 0, 0, 10, '#fff', 1));
+    }
+}
+
+// --- PILOT / PLANE ---
+class Pilot {
+    constructor(id, x, color, controls) {
         this.id = id;
-        this.startPos = {x, y};
+        this.spawnX = x;
         this.color = color;
         this.controls = controls;
+        this.bullets = [];
+        this.missiles = [];
         this.reset();
     }
 
     reset() {
-        this.x = this.startPos.x; this.y = this.startPos.y;
-        this.vx = 2; this.vy = 0;
-        this.angle = 0;
-        this.mode = 'flying'; // flying, falling, walking
-        this.bullets = [];
-        this.missiles = [];
+        this.x = this.spawnX; this.y = 100;
+        this.vx = (this.id === 1) ? 2 : -2;
+        this.vy = 0;
+        this.angle = (this.id === 1) ? 0 : Math.PI;
+        this.state = 'FLYING'; // FLYING, EJECTED, CHUTE, WALKING, DEAD
+        this.hp = 100;
         this.reload = 0;
-        this.hp = 3;
+        this.mReload = 0;
     }
 
-    update(target) {
-        if (this.mode === 'flying') {
-            // Physics: Steering affects velocity
-            if (keys[this.controls.l]) this.angle -= 0.1;
-            if (keys[this.controls.r]) this.angle += 0.1;
+    takeDamage(amt) {
+        this.hp -= amt;
+        if (this.hp <= 0 && this.state === 'FLYING') {
+            spawnExplosion(this.x, this.y, '#ff0');
+            this.state = 'EJECTED';
+            this.vy = -2;
+        }
+    }
 
-            // Engine Thrust
-            let thrust = 0.15;
-            this.vx += Math.cos(this.angle) * thrust;
-            this.vy += Math.sin(this.angle) * thrust;
-
-            // Gravity & Drag
+    update(opponent) {
+        if (this.state === 'FLYING') {
+            if (keys[this.controls.L]) this.angle -= 0.12;
+            if (keys[this.controls.R]) this.angle += 0.12;
+            
+            this.vx += Math.cos(this.angle) * THRUST;
+            this.vy += Math.sin(this.angle) * THRUST;
             this.vy += GRAVITY;
-            this.vx *= 0.98;
-            this.vy *= 0.98;
+            this.vx *= FRICTION;
+            this.vy *= FRICTION;
 
-            // Weaponry
-            if (keys[this.controls.f] && this.reload <= 0) {
-                this.bullets.push({x:this.x, y:this.y, vx: Math.cos(this.angle)*6, vy: Math.sin(this.angle)*6, t:40});
+            // Stall mechanic
+            let speed = Math.hypot(this.vx, this.vy);
+            if (speed < 1.5 && Math.abs(Math.sin(this.angle)) > 0.7) {
+                this.angle += 0.05; // Nose drops
+            }
+
+            if (keys[this.controls.F] && this.reload <= 0) {
+                this.bullets.push(new Bullet(this.x, this.y, this.angle, this));
                 this.reload = 10;
             }
-            if (keys[this.controls.m] && this.reload <= 0) {
-                this.missiles.push({x:this.x, y:this.y, a:this.angle, t:120});
-                this.reload = 60;
+            if (keys[this.controls.M] && this.mReload <= 0) {
+                this.missiles.push(new Missile(this.x, this.y, this.angle, opponent, this));
+                this.mReload = 180;
+            }
+            if (keys[this.controls.E]) {
+                this.state = 'EJECTED';
+                this.vy = -3;
             }
 
-            // Ground Collision
-            if (this.y > GROUND_Y - 5) {
-                if (Math.abs(this.vy) < 1 && Math.abs(this.angle) < 0.5) {
-                    this.vy = 0; this.y = GROUND_Y - 5; // Smooth Land
+            // Ground collision
+            if (this.y > GROUND_LEVEL - 5) {
+                if (speed > 4 || Math.abs(this.angle) > 0.8) {
+                    this.takeDamage(100);
                 } else {
-                    this.mode = 'falling'; // Crash
+                    this.y = GROUND_LEVEL - 5;
+                    this.vy = 0;
+                    this.vx *= 0.9;
                 }
             }
-
-            if (keys[this.controls.e]) this.mode = 'falling';
-
-        } else if (this.mode === 'falling' || this.mode === 'chute') {
-            if (keys[this.controls.e] && this.mode === 'falling') this.mode = 'chute';
-            this.vy = this.mode === 'chute' ? 0.8 : 2.5;
-            this.vx *= 0.95;
-            if (this.y >= GROUND_Y - 2) { this.y = GROUND_Y - 2; this.mode = 'walking'; }
-        } else if (this.mode === 'walking') {
+        } 
+        else if (this.state === 'EJECTED' || this.state === 'CHUTE') {
+            if (keys[this.controls.E] && this.state === 'EJECTED') this.state = 'CHUTE';
+            this.vy = (this.state === 'CHUTE') ? 0.7 : 3;
+            this.vx *= 0.98;
+            if (this.y >= GROUND_LEVEL - 2) {
+                this.y = GROUND_LEVEL - 2;
+                this.state = 'WALKING';
+            }
+        } 
+        else if (this.state === 'WALKING') {
             this.vx = 0;
-            if (keys[this.controls.l]) this.vx = -1;
-            if (keys[this.controls.r]) this.vx = 1;
-            if (Math.abs(this.x - BARN_X) < 20) this.reset();
+            if (keys[this.controls.L]) this.vx = -1.2;
+            if (keys[this.controls.R]) this.vx = 1.2;
+            if (Math.abs(this.x - BARN_X) < 15) this.reset();
         }
 
         this.x += this.vx;
         this.y += this.vy;
         if (this.x < 0) this.x = WORLD_W; if (this.x > WORLD_W) this.x = 0;
-        this.reload--;
-
-        // Projectile movement
-        this.bullets.forEach((b, i) => {
-            b.x += b.vx; b.y += b.vy; b.t--;
-            if (b.t < 0) this.bullets.splice(i, 1);
-        });
         
-        this.missiles.forEach((m, i) => {
-            let angleTo = Math.atan2(target.y - m.y, target.x - m.x);
-            let diff = angleTo - m.a;
-            while (diff < -Math.PI) diff += Math.PI*2;
-            while (diff > Math.PI) diff -= Math.PI*2;
-            m.a += diff * 0.05;
-            m.x += Math.cos(m.a) * 3.5;
-            m.y += Math.sin(m.a) * 3.5;
-            m.t--;
-            if (m.t < 0) this.missiles.splice(i, 1);
-        });
+        this.reload--; this.mReload--;
+
+        // Update Projectiles
+        for(let i=this.bullets.length-1; i>=0; i--) {
+            this.bullets[i].update();
+            let b = this.bullets[i];
+            // Hit detection
+            if (Math.hypot(b.x - opponent.x, b.y - opponent.y) < 15 && opponent.state === 'FLYING') {
+                opponent.takeDamage(25);
+                this.bullets.splice(i, 1);
+                spawnExplosion(b.x, b.y, '#fff');
+            } else if (b.life <= 0) this.bullets.splice(i, 1);
+        }
+
+        for(let i=this.missiles.length-1; i>=0; i--) {
+            this.missiles[i].update();
+            let m = this.missiles[i];
+            if (Math.hypot(m.x - opponent.x, m.y - opponent.y) < 15 && opponent.state === 'FLYING') {
+                opponent.takeDamage(60);
+                this.missiles.splice(i, 1);
+                spawnExplosion(m.x, m.y, '#f00');
+            } else if (m.life <= 0) this.missiles.splice(i, 1);
+        }
     }
 
     draw(c, cx, cy) {
         c.save();
         c.translate(this.x - cx, this.y - cy);
-        c.fillStyle = this.color;
-        if (this.mode === 'flying') {
+        
+        if (this.state === 'FLYING') {
             c.rotate(this.angle);
-            c.fillRect(-6, -2, 12, 4); // Body
-            c.fillRect(-1, -7, 2, 14); // Wings
-            c.fillStyle = "#fff"; c.fillRect(4, -1, 3, 2); // Nose
-        } else if (this.mode === 'walking' || this.mode === 'falling') {
-            c.fillStyle = "#fff"; c.fillRect(-2, -6, 4, 6); // Pilot
-        } else if (this.mode === 'chute') {
-            c.fillStyle = "#fff"; c.fillRect(-6, -15, 12, 3); // Chute
-            c.fillRect(-1, -6, 2, 6); // Character
+            // Body
+            c.fillStyle = this.color;
+            c.fillRect(-8, -2, 16, 4);
+            c.fillRect(-2, -9, 4, 18);
+            // Tail
+            c.fillRect(-10, -4, 2, 8);
+            // Nose
+            c.fillStyle = '#fff';
+            c.fillRect(6, -1, 3, 2);
+        } else if (this.state === 'WALKING' || this.state === 'EJECTED') {
+            c.fillStyle = '#fff';
+            c.fillRect(-2, -7, 4, 7); // Body
+            c.fillStyle = '#fca';
+            c.fillRect(-2, -10, 4, 3); // Head
+        } else if (this.state === 'CHUTE') {
+            c.strokeStyle = '#fff';
+            c.beginPath(); c.moveTo(-1, -6); c.lineTo(-8, -15); 
+            c.moveTo(1, -6); c.lineTo(8, -15); c.stroke();
+            c.fillStyle = '#fff';
+            c.fillRect(-10, -18, 20, 4);
+            c.fillStyle = '#fff'; c.fillRect(-2, -6, 4, 6);
         }
         c.restore();
 
-        this.bullets.forEach(b => { c.fillStyle = "#ff0"; c.fillRect(b.x-cx, b.y-cy, 2, 2); });
-        this.missiles.forEach(m => { c.fillStyle = "#f0f"; c.fillRect(m.x-cx, m.y-cy, 3, 3); });
+        this.bullets.forEach(b => {
+            c.fillStyle = '#ff0';
+            c.fillRect(b.x-cx, b.y-cy, 2, 2);
+        });
+        this.missiles.forEach(m => {
+            c.save();
+            c.translate(m.x-cx, m.y-cy);
+            c.rotate(m.angle);
+            c.fillStyle = '#f0f';
+            c.fillRect(-3, -1, 6, 2);
+            c.restore();
+        });
     }
 }
 
-let p1, p2;
+// --- GAME CORE ---
+let p1, p2, clouds = [];
+let gameStarted = false;
 
-function start() {
-    document.getElementById('ui').className = 'hidden';
-    p1 = new Plane(400, 100, '#f00', {l:'KeyA', r:'KeyD', f:'KeyC', m:'KeyV', e:'KeyX'}, 1);
-    p2 = new Plane(2000, 100, '#00f', {l:'ArrowLeft', r:'ArrowRight', f:'KeyN', m:'KeyM', e:'KeyB'}, 2);
-    update();
+function init() {
+    p1 = new Pilot(1, 500, '#e74c3c', {L:'KeyA', R:'KeyD', F:'KeyC', M:'KeyV', E:'KeyX'});
+    p2 = new Pilot(2, 2500, '#3498db', {L:'ArrowLeft', R:'ArrowRight', F:'KeyN', M:'KeyM', E:'KeyB'});
+    
+    for(let i=0; i<20; i++) {
+        clouds.push({
+            x: Math.random()*WORLD_W, 
+            y: 50 + Math.random()*150, 
+            s: 1 + Math.random()*2,
+            w: 30 + Math.random()*40
+        });
+    }
+    
+    loop();
 }
 
-function drawWorld(c, cx, cy) {
+function drawBG(c, cx, cy) {
+    // Parallax Clouds
+    c.fillStyle = 'rgba(255,255,255,0.3)';
+    clouds.forEach(cl => {
+        let x = (cl.x - cx * 0.5) % WORLD_W;
+        if (x < 0) x += WORLD_W;
+        c.fillRect(x, cl.y, cl.w, 10);
+    });
+
     // Ground
-    c.fillStyle = "#22aa22"; c.fillRect(0, GROUND_Y - cy, W, 100);
-    // Barn
-    c.fillStyle = "#aa2222"; 
-    c.fillRect(BARN_X - cx - 20, GROUND_Y - cy - 25, 40, 25);
-    c.fillStyle = "#fff"; 
-    c.fillRect(BARN_X - cx - 5, GROUND_Y - cy - 12, 10, 12);
+    let gy = GROUND_LEVEL - cy;
+    c.fillStyle = '#2ecc71';
+    c.fillRect(0, gy, RES_W, 100);
+    c.fillStyle = '#27ae60';
+    c.fillRect(0, gy + 5, RES_W, 2);
+
+    // The Barn
+    let bx = BARN_X - cx;
+    c.fillStyle = '#c0392b';
+    c.fillRect(bx - 25, gy - 30, 50, 30);
+    c.fillStyle = '#ecf0f1';
+    c.fillRect(bx - 8, gy - 15, 16, 15); // Door
+    c.strokeStyle = '#fff';
+    c.strokeRect(bx - 25, gy - 30, 50, 30);
 }
 
-function update() {
-    p1.update(p2); p2.update(p1);
-    ctx.clearRect(0,0,W,H);
+function loop() {
+    // Update
+    p1.update(p2);
+    p2.update(p1);
+    particles.forEach((p, i) => {
+        p.update();
+        if (p.life <= 0) particles.splice(i, 1);
+    });
+
+    ctx.clearRect(0,0,RES_W,RES_H);
 
     const dist = Math.abs(p1.x - p2.x);
-    if (dist < 180) {
-        // Zoomed in view
-        let cx = (p1.x + p2.x)/2 - W/2;
-        let cy = (p1.y + p2.y)/2 - H/2;
-        drawWorld(ctx, cx, cy);
-        p1.draw(ctx, cx, cy); p2.draw(ctx, cx, cy);
+    // Dynamic Split Screen logic
+    if (dist < 200) {
+        let cx = (p1.x + p2.x)/2 - RES_W/2;
+        let cy = (p1.y + p2.y)/2 - RES_H/2;
+        cy = clamp(cy, 0, 100);
+        drawBG(ctx, cx, cy);
+        p1.draw(ctx, cx, cy);
+        p2.draw(ctx, cx, cy);
+        particles.forEach(p => p.draw(ctx, cx, cy));
     } else {
-        // Split Screen
-        // P1
-        ctx.save(); ctx.beginPath(); ctx.rect(0,0,W/2-1, H); ctx.clip();
-        drawWorld(ctx, p1.x - W/4, p1.y - H/2);
-        p1.draw(ctx, p1.x - W/4, p1.y - H/2);
-        p2.draw(ctx, p1.x - W/4, p1.y - H/2);
+        // Split Screen View
+        // Left - P1
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0,0,RES_W/2-1, RES_H); ctx.clip();
+        let cx1 = p1.x - RES_W/4;
+        let cy1 = clamp(p1.y - RES_H/2, 0, 100);
+        drawBG(ctx, cx1, cy1);
+        p1.draw(ctx, cx1, cy1);
+        p2.draw(ctx, cx1, cy1);
+        particles.forEach(p => p.draw(ctx, cx1, cy1));
         ctx.restore();
-        // P2
-        ctx.save(); ctx.translate(W/2+1, 0); ctx.beginPath(); ctx.rect(0,0,W/2, H); ctx.clip();
-        drawWorld(ctx, p2.x - W/4, p2.y - H/2);
-        p1.draw(ctx, p2.x - W/4, p2.y - H/2);
-        p2.draw(ctx, p2.x - W/4, p2.y - H/2);
+
+        // Right - P2
+        ctx.save();
+        ctx.translate(RES_W/2+1, 0);
+        ctx.beginPath(); ctx.rect(0,0,RES_W/2, RES_H); ctx.clip();
+        let cx2 = p2.x - RES_W/4;
+        let cy2 = clamp(p2.y - RES_H/2, 0, 100);
+        drawBG(ctx, cx2, cy2);
+        p1.draw(ctx, cx2, cy2);
+        p2.draw(ctx, cx2, cy2);
+        particles.forEach(p => p.draw(ctx, cx2, cy2));
         ctx.restore();
+
         // Divider
-        ctx.fillStyle = "#fff"; ctx.fillRect(W/2-1, 0, 2, H);
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(RES_W/2-1, 0, 2, RES_H);
     }
 
-    // Minimap
-    ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(2,2, 60, 15);
-    ctx.fillStyle = p1.color; ctx.fillRect(2 + (p1.x/WORLD_W)*60, 8, 2, 2);
-    ctx.fillStyle = p2.color; ctx.fillRect(2 + (p2.x/WORLD_W)*60, 8, 2, 2);
-
-    requestAnimationFrame(update);
+    // HUD / Minimap
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(5, 5, 80, 20);
+    ctx.strokeStyle = '#fff';
+    ctx.strokeRect(5, 5, 80, 20);
+    ctx.fillStyle = p1.color; ctx.fillRect(5 + (p1.x/WORLD_W)*80, 13, 3, 3);
+    ctx.fillStyle = p2.color; ctx.fillRect(5 + (p2.x/WORLD_W)*80, 13, 3, 3);
+    
+    requestAnimationFrame(loop);
 }
+
+// --- BOOT SEQUENCE ---
+let progress = 0;
+let bar = document.getElementById('bar');
+let status = document.getElementById('status');
+let interval = setInterval(() => {
+    progress += Math.random() * 15;
+    if (progress >= 100) {
+        progress = 100;
+        clearInterval(interval);
+        status.innerText = "SYSTEM READY.";
+        document.getElementById('prompt').classList.remove('hidden');
+    }
+    bar.style.width = progress + "%";
+}, 150);
+
+window.addEventListener('keydown', e => {
+    if (e.code === 'Enter' && progress >= 100 && !gameStarted) {
+        gameStarted = true;
+        document.getElementById('boot-screen').classList.add('hidden');
+        init();
+    }
+});
 </script>
 </body>
 </html>
