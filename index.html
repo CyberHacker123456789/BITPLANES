@@ -2,190 +2,233 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sky Duel: Ejection & Barn</title>
+    <title>BIT-PLANES: REMASTERED</title>
     <style>
-        body { margin: 0; background: #222; color: white; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
-        canvas { display: block; }
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
+        canvas { display: block; image-rendering: pixelated; }
         #ui {
-            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            background: rgba(0,0,0,0.85); z-index: 10;
+            position: absolute; inset: 0; display: flex; align-items: center; 
+            justify-content: center; background: rgba(0,0,0,0.9); z-index: 20; color: #0f0;
         }
-        .box { background: #333; padding: 30px; border: 4px solid #555; text-align: center; }
-        .btn { padding: 15px 30px; margin: 10px; cursor: pointer; border: none; font-weight: bold; font-size: 1.2rem; }
-        .red { background: #d32f2f; color: white; }
-        .blue { background: #1976d2; color: white; }
-        .start { background: #388e3c; color: white; width: 100%; margin-top: 20px; }
+        .menu { border: 4px double #0f0; padding: 40px; text-align: center; background: #000; }
+        .btn { 
+            padding: 10px 20px; margin: 10px; cursor: pointer; border: 2px solid #0f0; 
+            background: #000; color: #0f0; font-weight: bold; text-transform: uppercase;
+        }
+        .btn:hover { background: #0f0; color: #000; }
         .hidden { display: none !important; }
-        #instr { font-size: 0.9rem; color: #bbb; line-height: 1.5; }
+        .p1-color { color: #ff4444; } .p2-color { color: #4444ff; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div class="box">
-        <h1>SKY DUEL 2.0</h1>
-        <div id="setup">
-            <p>P1, Choose your side:</p>
-            <button class="btn red" onclick="pick('red')">RED SQUADRON</button>
-            <button class="btn blue" onclick="pick('blue')">BLUE SQUADRON</button>
+    <div class="menu">
+        <h1>BIT-PLANES</h1>
+        <div id="step1">
+            <p>PLAYER 1: SELECT SQUADRON</p>
+            <button class="btn" onclick="setSide('red')">RED WING</button>
+            <button class="btn" onclick="setSide('blue')">BLUE WING</button>
         </div>
-        <div id="instr" class="hidden">
-            <p><strong>P1 (WASD):</strong> C: Bullets | V: Missiles | X: Eject/Chute</p>
-            <p><strong>P2 (Arrows):</strong> N: Bullets | M: Missiles | B: Eject/Chute</p>
-            <p><em>If shot down or ejected: Walk to the Center Barn to get a new plane!</em></p>
-            <button class="btn start" onclick="init()">LAUNCH MISSION</button>
+        <div id="step2" class="hidden">
+            <div style="display: flex; gap: 40px; text-align: left;">
+                <div>
+                    <h3 class="p1-color">P1 CONTROLS</h3>
+                    W/A/D: Fly/Turn<br>X: Eject/Chute<br>C: Cannons<br>V: Missile
+                </div>
+                <div>
+                    <h3 class="p2-color">P2 CONTROLS</h3>
+                    Arrows: Fly/Turn<br>B: Eject/Chute<br>N: Cannons<br>M: Missile
+                </div>
+            </div>
+            <p><i>LAND OR WALK TO THE CENTER BARN FOR REPAIRS</i></p>
+            <button class="btn" style="width:100%" onclick="start()">ENGAGE</button>
         </div>
     </div>
 </div>
 
-<canvas id="g"></canvas>
+<canvas id="stage"></canvas>
 
 <script>
-const canvas = document.getElementById('g');
+const canvas = document.getElementById('stage');
 const ctx = canvas.getContext('2d');
-let p1, p2, gameOn = false;
-const world = 4000;
-const barn = { x: 2000, y: 2000, size: 80 };
-const keys = {};
+const WORLD = 3000;
+const BARN = { x: 1500, y: 1500 };
+let p1, p2, active = false;
+let colors = { p1: '', p2: '' };
 
-window.onkeydown = e => keys[e.code] = true;
-window.onkeyup = e => keys[e.code] = false;
+const input = {};
+window.onkeydown = e => input[e.code] = true;
+window.onkeyup = e => input[e.code] = false;
 
-function pick(c) {
-    p1Color = c;
-    p2Color = c === 'red' ? 'blue' : 'red';
-    document.getElementById('setup').classList.add('hidden');
-    document.getElementById('instr').classList.remove('hidden');
+function setSide(c) {
+    colors.p1 = c;
+    colors.p2 = c === 'red' ? 'blue' : 'red';
+    document.getElementById('step1').className = 'hidden';
+    document.getElementById('step2').className = '';
 }
 
-class Entity {
-    constructor(x, y, color, controls) {
-        this.x = x; this.y = y; this.color = color; this.controls = controls;
-        this.reset();
+class BitPlane {
+    constructor(x, y, color, side) {
+        this.x = x; this.y = y; this.color = color;
+        this.side = side;
+        this.setupControls();
+        this.spawn();
     }
-    reset() {
-        this.state = 'flying'; // flying, falling, chute, walking
-        this.a = 0; this.v = 5; this.hp = 100;
-        this.bullets = []; this.missiles = [];
+
+    setupControls() {
+        if(this.side === 1) this.keys = { u:'KeyW', l:'KeyA', r:'KeyD', x:'KeyX', f:'KeyC', m:'KeyV' };
+        else this.keys = { u:'ArrowUp', l:'ArrowLeft', r:'ArrowRight', x:'KeyB', f:'KeyN', m:'KeyM' };
     }
-    update(target) {
-        if (this.state === 'flying') {
-            if (keys[this.controls.l]) this.a -= 0.06;
-            if (keys[this.controls.r]) this.a += 0.06;
-            this.x += Math.cos(this.a) * this.v;
-            this.y += Math.sin(this.a) * this.v;
-            if (keys[this.controls.fire] && Math.random() > 0.9) this.bullets.push({x:this.x, y:this.y, a:this.a, t:50});
-            if (keys[this.controls.missile] && Math.random() > 0.98) this.missiles.push({x:this.x, y:this.y, a:this.a, tgt:target, t:150});
-            if (keys[this.controls.eject]) { this.state = 'falling'; this.v = 2; }
-        } 
-        else if (this.state === 'falling' || this.state === 'chute') {
-            if (keys[this.controls.eject] && this.state === 'falling') this.state = 'chute';
-            this.v = this.state === 'chute' ? 1.5 : 4;
-            this.y += this.v; // Gravity
-            if (this.y > world - 100) { this.state = 'walking'; this.y = world - 50; }
-        }
-        else if (this.state === 'walking') {
-            let speed = 2;
-            if (keys[this.controls.l]) this.x -= speed;
-            if (keys[this.controls.r]) this.x += speed;
-            if (keys[this.controls.u]) this.y -= speed;
-            if (keys[this.controls.d]) this.y += speed;
+
+    spawn() {
+        this.state = 'air'; // air, chute, ground
+        this.angle = this.side === 1 ? 0 : Math.PI;
+        this.vel = 5;
+        this.hp = 100;
+        this.bullets = [];
+        this.missiles = [];
+        this.cooldown = 0;
+    }
+
+    update(opp) {
+        if (this.state === 'air') {
+            if (input[this.keys.l]) this.angle -= 0.08;
+            if (input[this.keys.r]) this.angle += 0.08;
+            this.x += Math.cos(this.angle) * this.vel;
+            this.y += Math.sin(this.angle) * this.vel;
             
-            // Barn Check
-            let dToBarn = Math.hypot(this.x - barn.x, this.y - barn.y);
-            if (dToBarn < 40) this.reset();
+            if (input[this.keys.f] && this.cooldown <= 0) {
+                this.bullets.push({x:this.x, y:this.y, a:this.angle, d:60});
+                this.cooldown = 10;
+            }
+            if (input[this.keys.m] && this.cooldown <= 0) {
+                this.missiles.push({x:this.x, y:this.y, a:this.angle, d:120, target:opp});
+                this.cooldown = 30;
+            }
+            if (input[this.keys.x]) this.state = 'falling';
+        } else if (this.state === 'falling' || this.state === 'chute') {
+            if (input[this.keys.x] && this.state === 'falling') this.state = 'chute';
+            this.y += (this.state === 'chute' ? 1 : 4);
+            if (this.y > WORLD - 50) { this.y = WORLD - 50; this.state = 'ground'; }
+        } else if (this.state === 'ground') {
+            if (input[this.keys.l]) this.x -= 2;
+            if (input[this.keys.r]) this.x += 2;
+            if (input[this.keys.u]) this.y -= 2;
+            if (input[this.keys.x] && this.y > WORLD - 100) this.y += 2; // S check
+            
+            if (Math.hypot(this.x - BARN.x, this.y - BARN.y) < 50) this.spawn();
         }
 
-        this.bullets.forEach((b, i) => { 
-            b.x += Math.cos(b.a) * 15; b.y += Math.sin(b.a) * 15; b.t--; 
-            if(b.t<0) this.bullets.splice(i,1);
+        this.cooldown--;
+        this.bullets.forEach((b, i) => {
+            b.x += Math.cos(b.a) * 12; b.y += Math.sin(b.a) * 12; b.d--;
+            if (b.d < 0) this.bullets.splice(i, 1);
         });
         this.missiles.forEach((m, i) => {
-            let angleTo = Math.atan2(m.tgt.y - m.y, m.tgt.x - m.x);
-            m.a += (angleTo - m.a) * 0.1;
-            m.x += Math.cos(m.a) * 10; m.y += Math.sin(m.a) * 10; m.t--;
-            if(m.t<0) this.missiles.splice(i,1);
+            let dx = m.target.x - m.x, dy = m.target.y - m.y;
+            let angleTo = Math.atan2(dy, dx);
+            let diff = angleTo - m.a;
+            while (diff < -Math.PI) diff += Math.PI*2;
+            while (diff > Math.PI) diff -= Math.PI*2;
+            m.a += diff * 0.08;
+            m.x += Math.cos(m.a) * 8; m.y += Math.sin(m.a) * 8; m.d--;
+            if (m.d < 0) this.missiles.splice(i, 1);
         });
+
+        // World Wrap
+        if (this.x < 0) this.x = WORLD; if (this.x > WORLD) this.x = 0;
+        if (this.y < 0) this.y = WORLD; if (this.y > WORLD) this.y = 0;
     }
+
     draw(ctx, cx, cy) {
         ctx.save();
         ctx.translate(this.x - cx, this.y - cy);
-        if (this.state === 'flying') {
-            ctx.rotate(this.a);
-            ctx.fillStyle = this.color;
-            // Cooler Plane Shape
-            ctx.beginPath();
-            ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-10, 0); ctx.lineTo(-15, 15);
-            ctx.closePath(); ctx.fill();
-            ctx.fillStyle = "cyan"; ctx.fillRect(0, -3, 8, 6); // Cockpit
-        } else if (this.state === 'falling' || this.state === 'walking') {
-            ctx.fillStyle = "white"; ctx.fillRect(-5, -10, 10, 20); // Person
+        ctx.fillStyle = this.color;
+        if (this.state === 'air') {
+            ctx.rotate(this.angle);
+            // Bitplanes chunky style
+            ctx.fillRect(-12, -4, 24, 8); // Body
+            ctx.fillRect(-4, -14, 8, 28); // Wings
+            ctx.fillStyle = '#fff'; ctx.fillRect(4, -2, 4, 4); // Cockpit
+        } else if (this.state === 'ground' || this.state === 'falling') {
+            ctx.fillStyle = '#fff'; ctx.fillRect(-4, -8, 8, 16); // Pilot
         } else if (this.state === 'chute') {
-            ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(0, -20, 15, Math.PI, 0); ctx.fill();
-            ctx.strokeStyle = "white"; ctx.moveTo(0,0); ctx.lineTo(0, -20); ctx.stroke();
-            ctx.fillRect(-3, -5, 6, 10);
+            ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-15,-20); ctx.moveTo(0,0); ctx.lineTo(15,-20); ctx.stroke();
+            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, -25, 15, Math.PI, 0); ctx.fill();
+            ctx.fillRect(-3,-5, 6, 10);
         }
         ctx.restore();
-        this.bullets.forEach(b => { ctx.fillStyle="yellow"; ctx.fillRect(b.x-cx, b.y-cy, 4, 4); });
-        this.missiles.forEach(m => { ctx.fillStyle="orange"; ctx.beginPath(); ctx.arc(m.x-cx, m.y-cy, 6, 0, 7); ctx.fill(); });
+        
+        this.bullets.forEach(b => { ctx.fillStyle = 'yellow'; ctx.fillRect(b.x-cx, b.y-cy, 4, 4); });
+        this.missiles.forEach(m => { 
+            ctx.fillStyle = 'orange'; ctx.beginPath(); ctx.arc(m.x-cx, m.y-cy, 5, 0, 7); ctx.fill(); 
+            ctx.fillStyle = 'white'; ctx.fillRect(m.x-cx-2, m.y-cy-2, 4, 4);
+        });
     }
 }
 
-function init() {
+function start() {
     document.getElementById('ui').classList.add('hidden');
-    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
-    p1 = new Entity(1800, 2000, p1Color, {u:'KeyW', d:'KeyS', l:'KeyA', r:'KeyD', fire:'KeyC', missile:'KeyV', eject:'KeyX'});
-    p2 = new Entity(2200, 2000, p2Color, {u:'ArrowUp', d:'ArrowDown', l:'ArrowLeft', r:'ArrowRight', fire:'KeyN', missile:'KeyM', eject:'KeyB'});
-    gameOn = true; loop();
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    p1 = new BitPlane(1000, 1500, colors.p1, 1);
+    p2 = new BitPlane(2000, 1500, colors.p2, 2);
+    active = true;
+    run();
 }
 
-function drawScene(ctx, cx, cy, w, h) {
-    // Grass Background
-    ctx.fillStyle = "#2d5a27"; ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = "#3a6b33";
-    for(let i=0; i<w; i+=100) { ctx.beginPath(); ctx.moveTo(i - (cx%100), 0); ctx.lineTo(i - (cx%100), h); ctx.stroke(); }
+function drawMap(ctx, cx, cy, w, h) {
+    // Dirt/Grass floor
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = '#333';
+    let step = 100;
+    for(let x = -cx%step; x < w; x+=step) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+    for(let y = -cy%step; y < h; y+=step) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
     
-    // Barn
-    ctx.fillStyle = "#800"; ctx.fillRect(barn.x - cx - 40, barn.y - cy - 40, 80, 80);
-    ctx.fillStyle = "white"; ctx.fillRect(barn.x - cx - 10, barn.y - cy + 10, 20, 30); // Door
+    // THE BARN
+    ctx.fillStyle = '#722'; ctx.fillRect(BARN.x-cx-60, BARN.y-cy-60, 120, 120);
+    ctx.fillStyle = '#411'; ctx.fillRect(BARN.x-cx-20, BARN.y-cy+20, 40, 40); // Door
+    ctx.strokeStyle = '#fff'; ctx.strokeRect(BARN.x-cx-60, BARN.y-cy-60, 120, 120);
 }
 
-function loop() {
-    if(!gameOn) return;
+function run() {
+    if (!active) return;
     p1.update(p2); p2.update(p1);
-    const dist = Math.hypot(p1.x-p2.x, p1.y-p2.y);
     ctx.clearRect(0,0,canvas.width, canvas.height);
 
-    if (dist < 600) {
+    const d = Math.hypot(p1.x-p2.x, p1.y-p2.y);
+    if (d < 500) {
         let cx = (p1.x+p2.x)/2 - canvas.width/2;
         let cy = (p1.y+p2.y)/2 - canvas.height/2;
-        drawScene(ctx, cx, cy, canvas.width, canvas.height);
+        drawMap(ctx, cx, cy, canvas.width, canvas.height);
         p1.draw(ctx, cx, cy); p2.draw(ctx, cx, cy);
     } else {
-        // P1 View
+        // P1
         ctx.save(); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
-        drawScene(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2, canvas.width/2, canvas.height);
+        drawMap(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2, canvas.width/2, canvas.height);
         p1.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
         p2.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
         ctx.restore();
-        // P2 View
+        // P2
         ctx.save(); ctx.translate(canvas.width/2, 0); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
-        drawScene(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2, canvas.width/2, canvas.height);
+        drawMap(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2, canvas.width/2, canvas.height);
         p1.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
         p2.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
         ctx.restore();
-        ctx.fillStyle="black"; ctx.fillRect(canvas.width/2-2, 0, 4, canvas.height);
+        ctx.fillStyle = '#0f0'; ctx.fillRect(canvas.width/2-2, 0, 4, canvas.height);
     }
 
     // Minimap
-    ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(10, 10, 150, 150);
-    let s = 150/world;
-    ctx.fillStyle=p1.color; ctx.fillRect(10+p1.x*s, 10+p1.y*s, 5, 5);
-    ctx.fillStyle=p2.color; ctx.fillRect(10+p2.x*s, 10+p2.y*s, 5, 5);
-    ctx.fillStyle="white"; ctx.fillRect(10+barn.x*s-2, 10+barn.y*s-2, 4, 4);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(10, 10, 150, 150);
+    ctx.strokeStyle = '#0f0'; ctx.strokeRect(10, 10, 150, 150);
+    let s = 150/WORLD;
+    ctx.fillStyle = p1.color; ctx.fillRect(10+p1.x*s, 10+p1.y*s, 4, 4);
+    ctx.fillStyle = p2.color; ctx.fillRect(10+p2.x*s, 10+p2.y*s, 4, 4);
+    ctx.fillStyle = '#fff'; ctx.fillRect(10+BARN.x*s, 10+BARN.y*s, 4, 4);
 
-    requestAnimationFrame(loop);
+    requestAnimationFrame(run);
 }
 </script>
 </body>
