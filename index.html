@@ -2,233 +2,180 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>BIT-PLANES: REMASTERED</title>
+    <title>BITPLANES - RETRO</title>
     <style>
-        body { margin: 0; background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
-        canvas { display: block; image-rendering: pixelated; }
+        body { margin: 0; background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { 
+            image-rendering: pixelated; 
+            width: 100vw; height: 100vh; 
+            object-fit: contain;
+            background: #4488ff; /* Sky Blue */
+            border: 4px solid #fff;
+        }
         #ui {
-            position: absolute; inset: 0; display: flex; align-items: center; 
-            justify-content: center; background: rgba(0,0,0,0.9); z-index: 20; color: #0f0;
+            position: absolute; color: #fff; font-family: 'Courier New', monospace;
+            text-align: center; background: rgba(0,0,0,0.9); padding: 20px; z-index: 10;
         }
-        .menu { border: 4px double #0f0; padding: 40px; text-align: center; background: #000; }
-        .btn { 
-            padding: 10px 20px; margin: 10px; cursor: pointer; border: 2px solid #0f0; 
-            background: #000; color: #0f0; font-weight: bold; text-transform: uppercase;
-        }
-        .btn:hover { background: #0f0; color: #000; }
-        .hidden { display: none !important; }
-        .p1-color { color: #ff4444; } .p2-color { color: #4444ff; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
 
 <div id="ui">
-    <div class="menu">
-        <h1>BIT-PLANES</h1>
-        <div id="step1">
-            <p>PLAYER 1: SELECT SQUADRON</p>
-            <button class="btn" onclick="setSide('red')">RED WING</button>
-            <button class="btn" onclick="setSide('blue')">BLUE WING</button>
-        </div>
-        <div id="step2" class="hidden">
-            <div style="display: flex; gap: 40px; text-align: left;">
-                <div>
-                    <h3 class="p1-color">P1 CONTROLS</h3>
-                    W/A/D: Fly/Turn<br>X: Eject/Chute<br>C: Cannons<br>V: Missile
-                </div>
-                <div>
-                    <h3 class="p2-color">P2 CONTROLS</h3>
-                    Arrows: Fly/Turn<br>B: Eject/Chute<br>N: Cannons<br>M: Missile
-                </div>
-            </div>
-            <p><i>LAND OR WALK TO THE CENTER BARN FOR REPAIRS</i></p>
-            <button class="btn" style="width:100%" onclick="start()">ENGAGE</button>
-        </div>
+    <h1 style="color:#ffff00; text-shadow: 4px 4px #ff0000;">BITPLANES</h1>
+    <div id="menu">
+        <p>P1: WASD + C (Fire) + V (Missile) + X (Eject)</p>
+        <p>P2: ARROWS + N (Fire) + M (Missile) + B (Eject)</p>
+        <button onclick="start()" style="padding:10px; cursor:pointer; font-weight:bold;">START DOGFIGHT</button>
     </div>
 </div>
 
-<canvas id="stage"></canvas>
+<canvas id="game"></canvas>
 
 <script>
-const canvas = document.getElementById('stage');
+const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const WORLD = 3000;
-const BARN = { x: 1500, y: 1500 };
-let p1, p2, active = false;
-let colors = { p1: '', p2: '' };
 
-const input = {};
-window.onkeydown = e => input[e.code] = true;
-window.onkeyup = e => input[e.code] = false;
+// Internal low-res resolution for pixel effect
+const W = 400; 
+const H = 240;
+canvas.width = W;
+canvas.height = H;
 
-function setSide(c) {
-    colors.p1 = c;
-    colors.p2 = c === 'red' ? 'blue' : 'red';
-    document.getElementById('step1').className = 'hidden';
-    document.getElementById('step2').className = '';
-}
+const WORLD_SIZE = 2000;
+const BARN = { x: 1000, y: 1950 };
+const keys = {};
+window.onkeydown = e => keys[e.code] = true;
+window.onkeyup = e => keys[e.code] = false;
 
-class BitPlane {
-    constructor(x, y, color, side) {
+class Pilot {
+    constructor(x, y, color, controls) {
         this.x = x; this.y = y; this.color = color;
-        this.side = side;
-        this.setupControls();
-        this.spawn();
+        this.controls = controls;
+        this.reset();
     }
-
-    setupControls() {
-        if(this.side === 1) this.keys = { u:'KeyW', l:'KeyA', r:'KeyD', x:'KeyX', f:'KeyC', m:'KeyV' };
-        else this.keys = { u:'ArrowUp', l:'ArrowLeft', r:'ArrowRight', x:'KeyB', f:'KeyN', m:'KeyM' };
+    reset() {
+        this.mode = 'plane'; // plane, chute, walking
+        this.angle = 0; this.v = 3; this.bullets = []; this.missiles = [];
+        this.cooldown = 0; this.y = 1000;
     }
-
-    spawn() {
-        this.state = 'air'; // air, chute, ground
-        this.angle = this.side === 1 ? 0 : Math.PI;
-        this.vel = 5;
-        this.hp = 100;
-        this.bullets = [];
-        this.missiles = [];
-        this.cooldown = 0;
-    }
-
     update(opp) {
-        if (this.state === 'air') {
-            if (input[this.keys.l]) this.angle -= 0.08;
-            if (input[this.keys.r]) this.angle += 0.08;
-            this.x += Math.cos(this.angle) * this.vel;
-            this.y += Math.sin(this.angle) * this.vel;
-            
-            if (input[this.keys.f] && this.cooldown <= 0) {
-                this.bullets.push({x:this.x, y:this.y, a:this.angle, d:60});
-                this.cooldown = 10;
+        if (this.mode === 'plane') {
+            if (keys[this.controls.l]) this.angle -= 0.1;
+            if (keys[this.controls.r]) this.angle += 0.1;
+            this.x += Math.cos(this.angle) * this.v;
+            this.y += Math.sin(this.angle) * this.v;
+            if (keys[this.controls.f] && this.cooldown <= 0) {
+                this.bullets.push({x:this.x, y:this.y, a:this.angle, life:30});
+                this.cooldown = 8;
             }
-            if (input[this.keys.m] && this.cooldown <= 0) {
-                this.missiles.push({x:this.x, y:this.y, a:this.angle, d:120, target:opp});
-                this.cooldown = 30;
+            if (keys[this.controls.m] && this.cooldown <= 0) {
+                this.missiles.push({x:this.x, y:this.y, a:this.angle, target:opp, life:100});
+                this.cooldown = 50;
             }
-            if (input[this.keys.x]) this.state = 'falling';
-        } else if (this.state === 'falling' || this.state === 'chute') {
-            if (input[this.keys.x] && this.state === 'falling') this.state = 'chute';
-            this.y += (this.state === 'chute' ? 1 : 4);
-            if (this.y > WORLD - 50) { this.y = WORLD - 50; this.state = 'ground'; }
-        } else if (this.state === 'ground') {
-            if (input[this.keys.l]) this.x -= 2;
-            if (input[this.keys.r]) this.x += 2;
-            if (input[this.keys.u]) this.y -= 2;
-            if (input[this.keys.x] && this.y > WORLD - 100) this.y += 2; // S check
-            
-            if (Math.hypot(this.x - BARN.x, this.y - BARN.y) < 50) this.spawn();
+            if (keys[this.controls.e]) { this.mode = 'falling'; }
+        } else if (this.mode === 'falling' || this.mode === 'chute') {
+            if (keys[this.controls.e] && this.mode === 'falling') this.mode = 'chute';
+            this.y += (this.mode === 'chute' ? 0.5 : 2);
+            if (this.y >= 1970) { this.y = 1970; this.mode = 'walking'; }
+        } else {
+            if (keys[this.controls.l]) this.x -= 1;
+            if (keys[this.controls.r]) this.x += 1;
+            if (Math.hypot(this.x - BARN.x, this.y - BARN.y) < 20) this.reset();
         }
 
         this.cooldown--;
         this.bullets.forEach((b, i) => {
-            b.x += Math.cos(b.a) * 12; b.y += Math.sin(b.a) * 12; b.d--;
-            if (b.d < 0) this.bullets.splice(i, 1);
+            b.x += Math.cos(b.a) * 6; b.y += Math.sin(b.a) * 6; b.life--;
+            if (b.life < 0) this.bullets.splice(i, 1);
         });
         this.missiles.forEach((m, i) => {
-            let dx = m.target.x - m.x, dy = m.target.y - m.y;
-            let angleTo = Math.atan2(dy, dx);
-            let diff = angleTo - m.a;
-            while (diff < -Math.PI) diff += Math.PI*2;
-            while (diff > Math.PI) diff -= Math.PI*2;
-            m.a += diff * 0.08;
-            m.x += Math.cos(m.a) * 8; m.y += Math.sin(m.a) * 8; m.d--;
-            if (m.d < 0) this.missiles.splice(i, 1);
+            let targetA = Math.atan2(m.target.y - m.y, m.target.x - m.x);
+            m.a += (targetA - m.a) * 0.1;
+            m.x += Math.cos(m.a) * 4; m.y += Math.sin(m.a) * 4; m.life--;
+            if (m.life < 0) this.missiles.splice(i, 1);
         });
 
-        // World Wrap
-        if (this.x < 0) this.x = WORLD; if (this.x > WORLD) this.x = 0;
-        if (this.y < 0) this.y = WORLD; if (this.y > WORLD) this.y = 0;
+        // Loop world
+        if (this.x < 0) this.x = WORLD_SIZE; if (this.x > WORLD_SIZE) this.x = 0;
     }
 
-    draw(ctx, cx, cy) {
-        ctx.save();
-        ctx.translate(this.x - cx, this.y - cy);
-        ctx.fillStyle = this.color;
-        if (this.state === 'air') {
-            ctx.rotate(this.angle);
-            // Bitplanes chunky style
-            ctx.fillRect(-12, -4, 24, 8); // Body
-            ctx.fillRect(-4, -14, 8, 28); // Wings
-            ctx.fillStyle = '#fff'; ctx.fillRect(4, -2, 4, 4); // Cockpit
-        } else if (this.state === 'ground' || this.state === 'falling') {
-            ctx.fillStyle = '#fff'; ctx.fillRect(-4, -8, 8, 16); // Pilot
-        } else if (this.state === 'chute') {
-            ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(-15,-20); ctx.moveTo(0,0); ctx.lineTo(15,-20); ctx.stroke();
-            ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, -25, 15, Math.PI, 0); ctx.fill();
-            ctx.fillRect(-3,-5, 6, 10);
+    draw(c, cx, cy) {
+        c.save();
+        c.translate(this.x - cx, this.y - cy);
+        c.fillStyle = this.color;
+        if (this.mode === 'plane') {
+            c.rotate(this.angle);
+            // Pixel Plane
+            c.fillRect(-6, -2, 12, 4); // Fuselage
+            c.fillRect(-2, -8, 4, 16); // Wings
+            c.fillStyle = "#fff"; c.fillRect(2, -1, 2, 2); // Nose
+        } else if (this.mode === 'falling' || this.mode === 'walking') {
+            c.fillStyle = "#fff"; c.fillRect(-2, -4, 4, 8); // Man
+        } else if (this.mode === 'chute') {
+            c.fillStyle = "#fff"; c.fillRect(-8, -12, 16, 4); // Chute
+            c.fillRect(-1, -8, 2, 8); // Strings
         }
-        ctx.restore();
-        
-        this.bullets.forEach(b => { ctx.fillStyle = 'yellow'; ctx.fillRect(b.x-cx, b.y-cy, 4, 4); });
-        this.missiles.forEach(m => { 
-            ctx.fillStyle = 'orange'; ctx.beginPath(); ctx.arc(m.x-cx, m.y-cy, 5, 0, 7); ctx.fill(); 
-            ctx.fillStyle = 'white'; ctx.fillRect(m.x-cx-2, m.y-cy-2, 4, 4);
-        });
+        c.restore();
+        this.bullets.forEach(b => { c.fillStyle = "yellow"; c.fillRect(b.x-cx, b.y-cy, 2, 2); });
+        this.missiles.forEach(m => { c.fillStyle = "red"; c.fillRect(m.x-cx, m.y-cy, 3, 3); });
     }
 }
 
+let p1, p2;
 function start() {
     document.getElementById('ui').classList.add('hidden');
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    p1 = new BitPlane(1000, 1500, colors.p1, 1);
-    p2 = new BitPlane(2000, 1500, colors.p2, 2);
-    active = true;
-    run();
+    p1 = new Pilot(200, 1000, '#ff0000', {l:'KeyA', r:'KeyD', f:'KeyC', m:'KeyV', e:'KeyX'});
+    p2 = new Pilot(1800, 1000, '#0000ff', {l:'ArrowLeft', r:'ArrowRight', f:'KeyN', m:'KeyM', e:'KeyB'});
+    loop();
 }
 
-function drawMap(ctx, cx, cy, w, h) {
-    // Dirt/Grass floor
-    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, w, h);
-    ctx.strokeStyle = '#333';
-    let step = 100;
-    for(let x = -cx%step; x < w; x+=step) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
-    for(let y = -cy%step; y < h; y+=step) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
-    
-    // THE BARN
-    ctx.fillStyle = '#722'; ctx.fillRect(BARN.x-cx-60, BARN.y-cy-60, 120, 120);
-    ctx.fillStyle = '#411'; ctx.fillRect(BARN.x-cx-20, BARN.y-cy+20, 40, 40); // Door
-    ctx.strokeStyle = '#fff'; ctx.strokeRect(BARN.x-cx-60, BARN.y-cy-60, 120, 120);
+function drawBackground(c, cx, cy, w, h) {
+    // Sky
+    c.fillStyle = "#4488ff"; c.fillRect(0,0,w,h);
+    // Ground
+    let groundY = 1980 - cy;
+    c.fillStyle = "#884400"; c.fillRect(0, groundY, w, 500);
+    c.fillStyle = "#22aa22"; c.fillRect(0, groundY - 4, w, 4);
+    // Barn
+    c.fillStyle = "#aa2222"; c.fillRect(BARN.x - cx - 15, BARN.y - cy - 20, 30, 20);
+    c.fillStyle = "#ffffff"; c.fillRect(BARN.x - cx - 5, BARN.y - cy - 10, 10, 10);
 }
 
-function run() {
-    if (!active) return;
+function loop() {
     p1.update(p2); p2.update(p1);
-    ctx.clearRect(0,0,canvas.width, canvas.height);
+    ctx.clearRect(0,0,W,H);
 
-    const d = Math.hypot(p1.x-p2.x, p1.y-p2.y);
-    if (d < 500) {
-        let cx = (p1.x+p2.x)/2 - canvas.width/2;
-        let cy = (p1.y+p2.y)/2 - canvas.height/2;
-        drawMap(ctx, cx, cy, canvas.width, canvas.height);
+    const dist = Math.abs(p1.x - p2.x);
+    if (dist < 150) {
+        let cx = (p1.x + p2.x)/2 - W/2;
+        let cy = (p1.y + p2.y)/2 - H/2;
+        drawBackground(ctx, cx, cy, W, H);
         p1.draw(ctx, cx, cy); p2.draw(ctx, cx, cy);
     } else {
-        // P1
-        ctx.save(); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
-        drawMap(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2, canvas.width/2, canvas.height);
-        p1.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
-        p2.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
+        // Split Screen
+        // Left
+        ctx.save(); ctx.beginPath(); ctx.rect(0,0,W/2-1, H); ctx.clip();
+        drawBackground(ctx, p1.x - W/4, p1.y - H/2, W/2, H);
+        p1.draw(ctx, p1.x - W/4, p1.y - H/2);
+        p2.draw(ctx, p1.x - W/4, p1.y - H/2);
         ctx.restore();
-        // P2
-        ctx.save(); ctx.translate(canvas.width/2, 0); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
-        drawMap(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2, canvas.width/2, canvas.height);
-        p1.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
-        p2.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
+        // Right
+        ctx.save(); ctx.translate(W/2+1, 0); ctx.beginPath(); ctx.rect(0,0,W/2, H); ctx.clip();
+        drawBackground(ctx, p2.x - W/4, p2.y - H/2, W/2, H);
+        p1.draw(ctx, p2.x - W/4, p2.y - H/2);
+        p2.draw(ctx, p2.x - W/4, p2.y - H/2);
         ctx.restore();
-        ctx.fillStyle = '#0f0'; ctx.fillRect(canvas.width/2-2, 0, 4, canvas.height);
+        // Line
+        ctx.fillStyle = "#fff"; ctx.fillRect(W/2-1, 0, 2, H);
     }
 
-    // Minimap
-    ctx.setTransform(1,0,0,1,0,0);
-    ctx.fillStyle = 'rgba(0,0,0,0.8)'; ctx.fillRect(10, 10, 150, 150);
-    ctx.strokeStyle = '#0f0'; ctx.strokeRect(10, 10, 150, 150);
-    let s = 150/WORLD;
-    ctx.fillStyle = p1.color; ctx.fillRect(10+p1.x*s, 10+p1.y*s, 4, 4);
-    ctx.fillStyle = p2.color; ctx.fillRect(10+p2.x*s, 10+p2.y*s, 4, 4);
-    ctx.fillStyle = '#fff'; ctx.fillRect(10+BARN.x*s, 10+BARN.y*s, 4, 4);
+    // Minimap (Top Left)
+    ctx.fillStyle = "rgba(0,0,0,0.5)"; ctx.fillRect(5, 5, 50, 20);
+    ctx.fillStyle = "#ff0000"; ctx.fillRect(5 + (p1.x/WORLD_SIZE)*50, 10, 2, 2);
+    ctx.fillStyle = "#0000ff"; ctx.fillRect(5 + (p2.x/WORLD_SIZE)*50, 10, 2, 2);
 
-    requestAnimationFrame(run);
+    requestAnimationFrame(loop);
 }
 </script>
 </body>
