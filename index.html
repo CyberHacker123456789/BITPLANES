@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Sky Duel: Split-Screen</title>
+    <style>
+        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        canvas { display: block; }
+        
+        #ui-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.8); z-index: 10;
+        }
+
+        .menu-box { background: #222; padding: 20px; border: 2px solid #444; border-radius: 10px; text-align: center; }
+        .btn { padding: 10px 20px; margin: 10px; cursor: pointer; border: none; font-weight: bold; }
+        .red-btn { background: #ff4444; }
+        .blue-btn { background: #4444ff; }
+        .start-btn { background: #44ff44; width: 100%; margin-top: 20px; }
+        .hidden { display: none !important; }
+        
+        #controls-hint { position: absolute; bottom: 10px; left: 10px; font-size: 12px; color: #aaa; }
+    </style>
+</head>
+<body>
+
+<div id="ui-overlay">
+    <div class="menu-box">
+        <h2>SKY DUEL</h2>
+        <div id="selection-area">
+            <p>P1, Pick Your Color:</p>
+            <button class="btn red-btn" onclick="pickColor('red')">RED</button>
+            <button class="btn blue-btn" onclick="pickColor('blue')">BLUE</button>
+        </div>
+        <div id="controls-tab">
+            <p><strong>P1:</strong> WASD (Move) | Space (Shoot) | V (Missile)</p>
+            <p><strong>P2:</strong> Arrows (Move) | M (Shoot) | N (Missile)</p>
+        </div>
+        <button class="btn start-btn hidden" id="start-game" onclick="startGame()">START MISSION</button>
+    </div>
+</div>
+
+<div id="controls-hint">P1: WASD + Space | P2: Arrows + M</div>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- Game Configuration ---
+let p1Color = '';
+let p2Color = '';
+let gameActive = false;
+const worldSize = 3000;
+const splitThreshold = 600; // Distance at which screen splits
+
+const keys = {};
+window.onkeydown = (e) => keys[e.code] = true;
+window.onkeyup = (e) => keys[e.code] = false;
+
+class Plane {
+    constructor(x, y, color, controls) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.angle = 0;
+        this.speed = 4;
+        this.health = 100;
+        this.controls = controls;
+        this.bullets = [];
+        this.missiles = [];
+        this.turnSpeed = 0.06;
+    }
+
+    update(target) {
+        // Movement logic
+        if (keys[this.controls.left]) this.angle -= this.turnSpeed;
+        if (keys[this.controls.right]) this.angle += this.turnSpeed;
+        if (keys[this.controls.up]) this.speed = Math.min(this.speed + 0.1, 8);
+        else this.speed = Math.max(this.speed - 0.05, 3);
+
+        this.x += Math.cos(this.angle) * this.speed;
+        this.y += Math.sin(this.angle) * this.speed;
+
+        // World Wrap
+        if (this.x < 0) this.x = worldSize;
+        if (this.x > worldSize) this.x = 0;
+        if (this.y < 0) this.y = worldSize;
+        if (this.y > worldSize) this.y = 0;
+
+        // Shooting
+        if (keys[this.controls.shoot] && Math.random() > 0.9) {
+            this.bullets.push({x: this.x, y: this.y, a: this.angle, life: 60});
+        }
+
+        // Lock-on Missile logic
+        if (keys[this.controls.missile] && Math.random() > 0.98) {
+            this.missiles.push({x: this.x, y: this.y, a: this.angle, target: target, life: 200});
+        }
+
+        this.bullets.forEach((b, i) => {
+            b.x += Math.cos(b.a) * 12;
+            b.y += Math.sin(b.a) * 12;
+            b.life--;
+            if(b.life <= 0) this.bullets.splice(i, 1);
+        });
+
+        this.missiles.forEach((m, i) => {
+            let dx = m.target.x - m.x;
+            let dy = m.target.y - m.y;
+            let targetAngle = Math.atan2(dy, dx);
+            m.a += (targetAngle - m.a) * 0.05; // Tracking
+            m.x += Math.cos(m.a) * 10;
+            m.y += Math.sin(m.a) * 10;
+            m.life--;
+            if(m.life <= 0) this.missiles.splice(i, 1);
+        });
+    }
+
+    draw(ctx, camX, camY) {
+        ctx.save();
+        ctx.translate(this.x - camX, this.y - camY);
+        ctx.rotate(this.angle);
+        ctx.fillStyle = this.color;
+        // Draw Plane Shape
+        ctx.beginPath();
+        ctx.moveTo(15, 0);
+        ctx.lineTo(-10, -10);
+        ctx.lineTo(-10, 10);
+        ctx.fill();
+        ctx.restore();
+
+        // Draw Projectiles
+        this.bullets.forEach(b => {
+            ctx.fillStyle = "yellow";
+            ctx.fillRect(b.x - camX, b.y - camY, 4, 4);
+        });
+        this.missiles.forEach(m => {
+            ctx.fillStyle = "orange";
+            ctx.beginPath();
+            ctx.arc(m.x - camX, m.y - camY, 5, 0, Math.PI*2);
+            ctx.fill();
+        });
+    }
+}
+
+let p1, p2;
+
+function pickColor(color) {
+    p1Color = color;
+    p2Color = color === 'red' ? 'blue' : 'red';
+    document.getElementById('selection-area').innerHTML = `<p>P1: ${p1Color.toUpperCase()} | P2: ${p2Color.toUpperCase()}</p>`;
+    document.getElementById('start-game').classList.remove('hidden');
+}
+
+function startGame() {
+    document.getElementById('ui-overlay').classList.add('hidden');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    
+    p1 = new Plane(100, 100, p1Color, {up:'KeyW', left:'KeyA', right:'KeyD', shoot:'Space', missile:'KeyV'});
+    p2 = new Plane(500, 500, p2Color, {up:'ArrowUp', left:'ArrowLeft', right:'ArrowRight', shoot:'KeyM', missile:'KeyN'});
+    
+    gameActive = true;
+    gameLoop();
+}
+
+function drawGrid(ctx, camX, camY, w, h) {
+    ctx.strokeStyle = "#222";
+    const step = 100;
+    for (let x = -camX % step; x < w; x += step) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = -camY % step; y < h; y += step) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+}
+
+function drawMinimap() {
+    const size = 150;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(10, 10, size, size);
+    ctx.strokeStyle = "#555";
+    ctx.strokeRect(10, 10, size, size);
+
+    const mapScale = size / worldSize;
+    ctx.fillStyle = p1.color;
+    ctx.fillRect(10 + p1.x * mapScale, 10 + p1.y * mapScale, 4, 4);
+    ctx.fillStyle = p2.color;
+    ctx.fillRect(10 + p2.x * mapScale, 10 + p2.y * mapScale, 4, 4);
+}
+
+function gameLoop() {
+    if (!gameActive) return;
+
+    p1.update(p2);
+    p2.update(p1);
+
+    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (dist < splitThreshold) {
+        // --- Full Screen Logic ---
+        const camX = (p1.x + p2.x) / 2 - canvas.width / 2;
+        const camY = (p1.y + p2.y) / 2 - canvas.height / 2;
+        drawGrid(ctx, camX, camY, canvas.width, canvas.height);
+        p1.draw(ctx, camX, camY);
+        p2.draw(ctx, camX, camY);
+    } else {
+        // --- Split Screen Logic ---
+        // Left Side (P1)
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0, 0, canvas.width/2, canvas.height); ctx.clip();
+        drawGrid(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2, canvas.width/2, canvas.height);
+        p1.draw(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2);
+        p2.draw(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2);
+        ctx.restore();
+
+        // Right Side (P2)
+        ctx.save();
+        ctx.translate(canvas.width/2, 0);
+        ctx.beginPath(); ctx.rect(0, 0, canvas.width/2, canvas.height); ctx.clip();
+        drawGrid(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2, canvas.width/2, canvas.height);
+        p1.draw(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2);
+        p2.draw(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2);
+        ctx.restore();
+
+        // Divider
+        ctx.fillStyle = "white";
+        ctx.fillRect(canvas.width/2 - 1, 0, 2, canvas.height);
+    }
+
+    drawMinimap();
+    requestAnimationFrame(gameLoop);
+}
+</script>
+</body>
+</html>
