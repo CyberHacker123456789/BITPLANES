@@ -2,237 +2,190 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Sky Duel: Split-Screen</title>
+    <title>Sky Duel: Ejection & Barn</title>
     <style>
-        body { margin: 0; background: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; background: #222; color: white; font-family: 'Courier New', Courier, monospace; overflow: hidden; }
         canvas { display: block; }
-        
-        #ui-overlay {
+        #ui {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             display: flex; flex-direction: column; align-items: center; justify-content: center;
-            background: rgba(0,0,0,0.8); z-index: 10;
+            background: rgba(0,0,0,0.85); z-index: 10;
         }
-
-        .menu-box { background: #222; padding: 20px; border: 2px solid #444; border-radius: 10px; text-align: center; }
-        .btn { padding: 10px 20px; margin: 10px; cursor: pointer; border: none; font-weight: bold; }
-        .red-btn { background: #ff4444; }
-        .blue-btn { background: #4444ff; }
-        .start-btn { background: #44ff44; width: 100%; margin-top: 20px; }
+        .box { background: #333; padding: 30px; border: 4px solid #555; text-align: center; }
+        .btn { padding: 15px 30px; margin: 10px; cursor: pointer; border: none; font-weight: bold; font-size: 1.2rem; }
+        .red { background: #d32f2f; color: white; }
+        .blue { background: #1976d2; color: white; }
+        .start { background: #388e3c; color: white; width: 100%; margin-top: 20px; }
         .hidden { display: none !important; }
-        
-        #controls-hint { position: absolute; bottom: 10px; left: 10px; font-size: 12px; color: #aaa; }
+        #instr { font-size: 0.9rem; color: #bbb; line-height: 1.5; }
     </style>
 </head>
 <body>
 
-<div id="ui-overlay">
-    <div class="menu-box">
-        <h2>SKY DUEL</h2>
-        <div id="selection-area">
-            <p>P1, Pick Your Color:</p>
-            <button class="btn red-btn" onclick="pickColor('red')">RED</button>
-            <button class="btn blue-btn" onclick="pickColor('blue')">BLUE</button>
+<div id="ui">
+    <div class="box">
+        <h1>SKY DUEL 2.0</h1>
+        <div id="setup">
+            <p>P1, Choose your side:</p>
+            <button class="btn red" onclick="pick('red')">RED SQUADRON</button>
+            <button class="btn blue" onclick="pick('blue')">BLUE SQUADRON</button>
         </div>
-        <div id="controls-tab">
-            <p><strong>P1:</strong> WASD (Move) | Space (Shoot) | V (Missile)</p>
-            <p><strong>P2:</strong> Arrows (Move) | M (Shoot) | N (Missile)</p>
+        <div id="instr" class="hidden">
+            <p><strong>P1 (WASD):</strong> C: Bullets | V: Missiles | X: Eject/Chute</p>
+            <p><strong>P2 (Arrows):</strong> N: Bullets | M: Missiles | B: Eject/Chute</p>
+            <p><em>If shot down or ejected: Walk to the Center Barn to get a new plane!</em></p>
+            <button class="btn start" onclick="init()">LAUNCH MISSION</button>
         </div>
-        <button class="btn start-btn hidden" id="start-game" onclick="startGame()">START MISSION</button>
     </div>
 </div>
 
-<div id="controls-hint">P1: WASD + Space | P2: Arrows + M</div>
-<canvas id="gameCanvas"></canvas>
+<canvas id="g"></canvas>
 
 <script>
-const canvas = document.getElementById('gameCanvas');
+const canvas = document.getElementById('g');
 const ctx = canvas.getContext('2d');
-
-// --- Game Configuration ---
-let p1Color = '';
-let p2Color = '';
-let gameActive = false;
-const worldSize = 3000;
-const splitThreshold = 600; // Distance at which screen splits
-
+let p1, p2, gameOn = false;
+const world = 4000;
+const barn = { x: 2000, y: 2000, size: 80 };
 const keys = {};
-window.onkeydown = (e) => keys[e.code] = true;
-window.onkeyup = (e) => keys[e.code] = false;
 
-class Plane {
+window.onkeydown = e => keys[e.code] = true;
+window.onkeyup = e => keys[e.code] = false;
+
+function pick(c) {
+    p1Color = c;
+    p2Color = c === 'red' ? 'blue' : 'red';
+    document.getElementById('setup').classList.add('hidden');
+    document.getElementById('instr').classList.remove('hidden');
+}
+
+class Entity {
     constructor(x, y, color, controls) {
-        this.x = x;
-        this.y = y;
-        this.color = color;
-        this.angle = 0;
-        this.speed = 4;
-        this.health = 100;
-        this.controls = controls;
-        this.bullets = [];
-        this.missiles = [];
-        this.turnSpeed = 0.06;
+        this.x = x; this.y = y; this.color = color; this.controls = controls;
+        this.reset();
     }
-
+    reset() {
+        this.state = 'flying'; // flying, falling, chute, walking
+        this.a = 0; this.v = 5; this.hp = 100;
+        this.bullets = []; this.missiles = [];
+    }
     update(target) {
-        // Movement logic
-        if (keys[this.controls.left]) this.angle -= this.turnSpeed;
-        if (keys[this.controls.right]) this.angle += this.turnSpeed;
-        if (keys[this.controls.up]) this.speed = Math.min(this.speed + 0.1, 8);
-        else this.speed = Math.max(this.speed - 0.05, 3);
-
-        this.x += Math.cos(this.angle) * this.speed;
-        this.y += Math.sin(this.angle) * this.speed;
-
-        // World Wrap
-        if (this.x < 0) this.x = worldSize;
-        if (this.x > worldSize) this.x = 0;
-        if (this.y < 0) this.y = worldSize;
-        if (this.y > worldSize) this.y = 0;
-
-        // Shooting
-        if (keys[this.controls.shoot] && Math.random() > 0.9) {
-            this.bullets.push({x: this.x, y: this.y, a: this.angle, life: 60});
+        if (this.state === 'flying') {
+            if (keys[this.controls.l]) this.a -= 0.06;
+            if (keys[this.controls.r]) this.a += 0.06;
+            this.x += Math.cos(this.a) * this.v;
+            this.y += Math.sin(this.a) * this.v;
+            if (keys[this.controls.fire] && Math.random() > 0.9) this.bullets.push({x:this.x, y:this.y, a:this.a, t:50});
+            if (keys[this.controls.missile] && Math.random() > 0.98) this.missiles.push({x:this.x, y:this.y, a:this.a, tgt:target, t:150});
+            if (keys[this.controls.eject]) { this.state = 'falling'; this.v = 2; }
+        } 
+        else if (this.state === 'falling' || this.state === 'chute') {
+            if (keys[this.controls.eject] && this.state === 'falling') this.state = 'chute';
+            this.v = this.state === 'chute' ? 1.5 : 4;
+            this.y += this.v; // Gravity
+            if (this.y > world - 100) { this.state = 'walking'; this.y = world - 50; }
+        }
+        else if (this.state === 'walking') {
+            let speed = 2;
+            if (keys[this.controls.l]) this.x -= speed;
+            if (keys[this.controls.r]) this.x += speed;
+            if (keys[this.controls.u]) this.y -= speed;
+            if (keys[this.controls.d]) this.y += speed;
+            
+            // Barn Check
+            let dToBarn = Math.hypot(this.x - barn.x, this.y - barn.y);
+            if (dToBarn < 40) this.reset();
         }
 
-        // Lock-on Missile logic
-        if (keys[this.controls.missile] && Math.random() > 0.98) {
-            this.missiles.push({x: this.x, y: this.y, a: this.angle, target: target, life: 200});
-        }
-
-        this.bullets.forEach((b, i) => {
-            b.x += Math.cos(b.a) * 12;
-            b.y += Math.sin(b.a) * 12;
-            b.life--;
-            if(b.life <= 0) this.bullets.splice(i, 1);
+        this.bullets.forEach((b, i) => { 
+            b.x += Math.cos(b.a) * 15; b.y += Math.sin(b.a) * 15; b.t--; 
+            if(b.t<0) this.bullets.splice(i,1);
         });
-
         this.missiles.forEach((m, i) => {
-            let dx = m.target.x - m.x;
-            let dy = m.target.y - m.y;
-            let targetAngle = Math.atan2(dy, dx);
-            m.a += (targetAngle - m.a) * 0.05; // Tracking
-            m.x += Math.cos(m.a) * 10;
-            m.y += Math.sin(m.a) * 10;
-            m.life--;
-            if(m.life <= 0) this.missiles.splice(i, 1);
+            let angleTo = Math.atan2(m.tgt.y - m.y, m.tgt.x - m.x);
+            m.a += (angleTo - m.a) * 0.1;
+            m.x += Math.cos(m.a) * 10; m.y += Math.sin(m.a) * 10; m.t--;
+            if(m.t<0) this.missiles.splice(i,1);
         });
     }
-
-    draw(ctx, camX, camY) {
+    draw(ctx, cx, cy) {
         ctx.save();
-        ctx.translate(this.x - camX, this.y - camY);
-        ctx.rotate(this.angle);
-        ctx.fillStyle = this.color;
-        // Draw Plane Shape
-        ctx.beginPath();
-        ctx.moveTo(15, 0);
-        ctx.lineTo(-10, -10);
-        ctx.lineTo(-10, 10);
-        ctx.fill();
-        ctx.restore();
-
-        // Draw Projectiles
-        this.bullets.forEach(b => {
-            ctx.fillStyle = "yellow";
-            ctx.fillRect(b.x - camX, b.y - camY, 4, 4);
-        });
-        this.missiles.forEach(m => {
-            ctx.fillStyle = "orange";
+        ctx.translate(this.x - cx, this.y - cy);
+        if (this.state === 'flying') {
+            ctx.rotate(this.a);
+            ctx.fillStyle = this.color;
+            // Cooler Plane Shape
             ctx.beginPath();
-            ctx.arc(m.x - camX, m.y - camY, 5, 0, Math.PI*2);
-            ctx.fill();
-        });
+            ctx.moveTo(20, 0); ctx.lineTo(-15, -15); ctx.lineTo(-10, 0); ctx.lineTo(-15, 15);
+            ctx.closePath(); ctx.fill();
+            ctx.fillStyle = "cyan"; ctx.fillRect(0, -3, 8, 6); // Cockpit
+        } else if (this.state === 'falling' || this.state === 'walking') {
+            ctx.fillStyle = "white"; ctx.fillRect(-5, -10, 10, 20); // Person
+        } else if (this.state === 'chute') {
+            ctx.fillStyle = "white"; ctx.beginPath(); ctx.arc(0, -20, 15, Math.PI, 0); ctx.fill();
+            ctx.strokeStyle = "white"; ctx.moveTo(0,0); ctx.lineTo(0, -20); ctx.stroke();
+            ctx.fillRect(-3, -5, 6, 10);
+        }
+        ctx.restore();
+        this.bullets.forEach(b => { ctx.fillStyle="yellow"; ctx.fillRect(b.x-cx, b.y-cy, 4, 4); });
+        this.missiles.forEach(m => { ctx.fillStyle="orange"; ctx.beginPath(); ctx.arc(m.x-cx, m.y-cy, 6, 0, 7); ctx.fill(); });
     }
 }
 
-let p1, p2;
-
-function pickColor(color) {
-    p1Color = color;
-    p2Color = color === 'red' ? 'blue' : 'red';
-    document.getElementById('selection-area').innerHTML = `<p>P1: ${p1Color.toUpperCase()} | P2: ${p2Color.toUpperCase()}</p>`;
-    document.getElementById('start-game').classList.remove('hidden');
+function init() {
+    document.getElementById('ui').classList.add('hidden');
+    canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+    p1 = new Entity(1800, 2000, p1Color, {u:'KeyW', d:'KeyS', l:'KeyA', r:'KeyD', fire:'KeyC', missile:'KeyV', eject:'KeyX'});
+    p2 = new Entity(2200, 2000, p2Color, {u:'ArrowUp', d:'ArrowDown', l:'ArrowLeft', r:'ArrowRight', fire:'KeyN', missile:'KeyM', eject:'KeyB'});
+    gameOn = true; loop();
 }
 
-function startGame() {
-    document.getElementById('ui-overlay').classList.add('hidden');
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+function drawScene(ctx, cx, cy, w, h) {
+    // Grass Background
+    ctx.fillStyle = "#2d5a27"; ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = "#3a6b33";
+    for(let i=0; i<w; i+=100) { ctx.beginPath(); ctx.moveTo(i - (cx%100), 0); ctx.lineTo(i - (cx%100), h); ctx.stroke(); }
     
-    p1 = new Plane(100, 100, p1Color, {up:'KeyW', left:'KeyA', right:'KeyD', shoot:'Space', missile:'KeyV'});
-    p2 = new Plane(500, 500, p2Color, {up:'ArrowUp', left:'ArrowLeft', right:'ArrowRight', shoot:'KeyM', missile:'KeyN'});
-    
-    gameActive = true;
-    gameLoop();
+    // Barn
+    ctx.fillStyle = "#800"; ctx.fillRect(barn.x - cx - 40, barn.y - cy - 40, 80, 80);
+    ctx.fillStyle = "white"; ctx.fillRect(barn.x - cx - 10, barn.y - cy + 10, 20, 30); // Door
 }
 
-function drawGrid(ctx, camX, camY, w, h) {
-    ctx.strokeStyle = "#222";
-    const step = 100;
-    for (let x = -camX % step; x < w; x += step) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
-    }
-    for (let y = -camY % step; y < h; y += step) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-    }
-}
+function loop() {
+    if(!gameOn) return;
+    p1.update(p2); p2.update(p1);
+    const dist = Math.hypot(p1.x-p2.x, p1.y-p2.y);
+    ctx.clearRect(0,0,canvas.width, canvas.height);
 
-function drawMinimap() {
-    const size = 150;
-    ctx.fillStyle = "rgba(0,0,0,0.5)";
-    ctx.fillRect(10, 10, size, size);
-    ctx.strokeStyle = "#555";
-    ctx.strokeRect(10, 10, size, size);
-
-    const mapScale = size / worldSize;
-    ctx.fillStyle = p1.color;
-    ctx.fillRect(10 + p1.x * mapScale, 10 + p1.y * mapScale, 4, 4);
-    ctx.fillStyle = p2.color;
-    ctx.fillRect(10 + p2.x * mapScale, 10 + p2.y * mapScale, 4, 4);
-}
-
-function gameLoop() {
-    if (!gameActive) return;
-
-    p1.update(p2);
-    p2.update(p1);
-
-    const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    if (dist < splitThreshold) {
-        // --- Full Screen Logic ---
-        const camX = (p1.x + p2.x) / 2 - canvas.width / 2;
-        const camY = (p1.y + p2.y) / 2 - canvas.height / 2;
-        drawGrid(ctx, camX, camY, canvas.width, canvas.height);
-        p1.draw(ctx, camX, camY);
-        p2.draw(ctx, camX, camY);
+    if (dist < 600) {
+        let cx = (p1.x+p2.x)/2 - canvas.width/2;
+        let cy = (p1.y+p2.y)/2 - canvas.height/2;
+        drawScene(ctx, cx, cy, canvas.width, canvas.height);
+        p1.draw(ctx, cx, cy); p2.draw(ctx, cx, cy);
     } else {
-        // --- Split Screen Logic ---
-        // Left Side (P1)
-        ctx.save();
-        ctx.beginPath(); ctx.rect(0, 0, canvas.width/2, canvas.height); ctx.clip();
-        drawGrid(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2, canvas.width/2, canvas.height);
-        p1.draw(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2);
-        p2.draw(ctx, p1.x - canvas.width/4, p1.y - canvas.height/2);
+        // P1 View
+        ctx.save(); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
+        drawScene(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2, canvas.width/2, canvas.height);
+        p1.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
+        p2.draw(ctx, p1.x-canvas.width/4, p1.y-canvas.height/2);
         ctx.restore();
-
-        // Right Side (P2)
-        ctx.save();
-        ctx.translate(canvas.width/2, 0);
-        ctx.beginPath(); ctx.rect(0, 0, canvas.width/2, canvas.height); ctx.clip();
-        drawGrid(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2, canvas.width/2, canvas.height);
-        p1.draw(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2);
-        p2.draw(ctx, p2.x - canvas.width/4, p2.y - canvas.height/2);
+        // P2 View
+        ctx.save(); ctx.translate(canvas.width/2, 0); ctx.beginPath(); ctx.rect(0,0,canvas.width/2, canvas.height); ctx.clip();
+        drawScene(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2, canvas.width/2, canvas.height);
+        p1.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
+        p2.draw(ctx, p2.x-canvas.width/4, p2.y-canvas.height/2);
         ctx.restore();
-
-        // Divider
-        ctx.fillStyle = "white";
-        ctx.fillRect(canvas.width/2 - 1, 0, 2, canvas.height);
+        ctx.fillStyle="black"; ctx.fillRect(canvas.width/2-2, 0, 4, canvas.height);
     }
 
-    drawMinimap();
-    requestAnimationFrame(gameLoop);
+    // Minimap
+    ctx.fillStyle="rgba(0,0,0,0.7)"; ctx.fillRect(10, 10, 150, 150);
+    let s = 150/world;
+    ctx.fillStyle=p1.color; ctx.fillRect(10+p1.x*s, 10+p1.y*s, 5, 5);
+    ctx.fillStyle=p2.color; ctx.fillRect(10+p2.x*s, 10+p2.y*s, 5, 5);
+    ctx.fillStyle="white"; ctx.fillRect(10+barn.x*s-2, 10+barn.y*s-2, 4, 4);
+
+    requestAnimationFrame(loop);
 }
 </script>
 </body>
